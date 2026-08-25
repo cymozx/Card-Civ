@@ -1,0 +1,8 @@
+# 엑셀이 파일을 열어둔 동안 만드는 임시 잠금 파일
+~$*.xlsx
+~$*.xls
+
+# 윈도우 / macOS 탐색기 부산물
+Thumbs.db
+desktop.ini
+.DS_Store
