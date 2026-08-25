@@ -8,6 +8,9 @@ var Render = (function () {
   var elBoard, elCanvas, elShop, elInfo, elLog, elToast;
   var toastTimer = null;
 
+  var SNAP_MS = 150;              // 붙을 때 미끄러져 들어오는 시간
+  var DROP_OVERLAP_RATIO = 0.28;  // 카드 넓이의 몇 %가 겹쳐야 '올렸다'고 볼지
+
   // 드래그 상태
   var pending = null;   // 마우스를 눌렀지만 아직 움직이지 않은 상태
   var drag = null;      // 실제 드래그 중
@@ -280,10 +283,12 @@ var Render = (function () {
   }
 
   // ------------------------------------------------------------- 드래그
-  function canvasPoint(e) {
+  function canvasPointXY(clientX, clientY) {
     var r = elCanvas.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    return { x: clientX - r.left, y: clientY - r.top };
   }
+
+  function canvasPoint(e) { return canvasPointXY(e.clientX, e.clientY); }
 
   function onCardMouseDown(e) {
     if (e.button !== 0) return;
@@ -321,13 +326,18 @@ var Render = (function () {
     if (!el) { pending = null; return; }
     el.classList.add('dragging');
 
-    var p = canvasPoint(e);
+    // 잡은 지점은 '마우스를 누른 순간' 기준으로 잰다. 드래그가 시작되는 첫 이동
+    // 시점으로 재면 그 이동거리만큼 카드가 커서보다 밀려서 따라온다.
+    var p = canvasPointXY(pending.startClientX, pending.startClientY);
     drag = {
       stack: newStack,
       el: el,
+      target: null,          // 지금 놓으면 붙을 스택
       grabDX: p.x - newStack.x,
       grabDY: p.y - newStack.y
     };
+    updateDropHighlight(findDropTarget(newStack));
+    document.body.classList.add('dragging-now');
     pending = null;
   }
 
@@ -335,8 +345,9 @@ var Render = (function () {
     if (pending) {
       var dx = e.clientX - pending.startClientX;
       var dy = e.clientY - pending.startClientY;
-      if (dx * dx + dy * dy > 16) beginDrag(e);
-      return;
+      if (dx * dx + dy * dy <= 16) return;   // 그냥 클릭인지 드래그인지 구분하는 최소 거리
+      beginDrag(e);
+      // 아래로 계속 진행해서 이번 이동분까지 바로 반영한다.
     }
     if (!drag) return;
 
@@ -347,6 +358,70 @@ var Render = (function () {
     drag.stack.y = ny;
     drag.el.style.left = nx + 'px';
     drag.el.style.top = ny + 'px';
+
+    updateDropHighlight(findDropTarget(drag.stack));
+  }
+
+  // 놓을 대상 찾기 — 커서 위치가 아니라 '카드끼리 겹친 넓이'로 판정한다.
+  // 커서로 판정하면 카드가 눈에 보이게 겹쳐 있어도 커서만 살짝 빗나가면 안 붙어서
+  // "인식이 안 된다"고 느껴진다. 겹침 판정이 훨씬 관대하고 예측 가능하다.
+  function findDropTarget(draggedStack) {
+    var dx = draggedStack.x;
+    var dy = draggedStack.y;
+    var minArea = CARD_W * CARD_H * DROP_OVERLAP_RATIO;
+    var best = null;
+    var bestArea = 0;
+
+    for (var i = 0; i < Game.stacks.length; i++) {
+      var s = Game.stacks[i];
+      if (s === draggedStack) continue;
+
+      // 대상은 스택 전체 넓이로 본다(높이 쌓인 무더기 중간에 놓아도 붙도록).
+      var ox = Math.min(dx + CARD_W, s.x + CARD_W) - Math.max(dx, s.x);
+      var oy = Math.min(dy + CARD_H, s.y + stackHeight(s)) - Math.max(dy, s.y);
+      if (ox <= 0 || oy <= 0) continue;
+
+      var area = ox * oy;
+      if (area > bestArea) { bestArea = area; best = s; }
+    }
+    return bestArea >= minArea ? best : null;
+  }
+
+  function clearDropHighlight() {
+    var marked = elCanvas.querySelectorAll('.stack.drop-target');
+    for (var i = 0; i < marked.length; i++) marked[i].classList.remove('drop-target');
+  }
+
+  // 지금 놓으면 어디에 붙는지 점선 자리로 미리 보여준다.
+  function updateDropHighlight(target) {
+    if (drag.target === target) return;
+    clearDropHighlight();
+    drag.target = target;
+    if (!target) return;
+    var el = elCanvas.querySelector('.stack[data-stack-id="' + target.id + '"]');
+    if (el) el.classList.add('drop-target');
+  }
+
+  // 놓은 자리에서 붙을 자리로 '착' 미끄러져 들어오는 효과.
+  // 게임 상태는 이미 합쳐진 뒤라, 애니메이션 도중 무슨 일이 생겨도 데이터는 안전하다.
+  function snapAnimate(stackId, fromDX, fromDY, startIndex) {
+    var sEl = elCanvas.querySelector('.stack[data-stack-id="' + stackId + '"]');
+    if (!sEl) return;
+    var cards = sEl.querySelectorAll('.card');
+
+    for (var i = startIndex; i < cards.length; i++) {
+      cards[i].style.transition = 'none';
+      cards[i].style.transform = 'translate(' + fromDX + 'px, ' + fromDY + 'px)';
+    }
+    void sEl.offsetWidth;   // 위 시작 위치를 확정시키기 위한 강제 리플로우
+
+    for (var j = startIndex; j < cards.length; j++) {
+      cards[j].style.transition = 'transform ' + SNAP_MS + 'ms cubic-bezier(0.2, 0.85, 0.3, 1.3)';
+      cards[j].style.transform = 'translate(0, 0)';
+    }
+
+    sEl.classList.add('stack-landed');
+    setTimeout(function () { sEl.classList.remove('stack-landed'); }, 340);
   }
 
   function onMouseUp(e) {
@@ -354,25 +429,27 @@ var Render = (function () {
     if (!drag) return;
 
     var draggedStack = drag.stack;
+    var target = drag.target;
     drag.el.classList.remove('dragging');
+    document.body.classList.remove('dragging-now');
+    clearDropHighlight();
     drag = null;
 
-    // .dragging 은 pointer-events:none 이었으므로, 커서 아래에는 놓을 대상이 잡힌다.
-    var under = document.elementFromPoint(e.clientX, e.clientY);
-    var targetCardEl = under ? under.closest('.card') : null;
+    if (!target) { renderAll(); return; }
 
-    if (targetCardEl && targetCardEl.dataset.stackId) {
-      var targetStack = stackById(parseInt(targetCardEl.dataset.stackId, 10));
-      if (targetStack && targetStack !== draggedStack) {
-        // 대상 스택 위에 얹는다.
-        targetStack.cardUids = targetStack.cardUids.concat(draggedStack.cardUids);
-        Game.stacks.splice(Game.stacks.indexOf(draggedStack), 1);
-        // 얹은 스택을 맨 위로 올려 그린다.
-        Game.stacks.splice(Game.stacks.indexOf(targetStack), 1);
-        Game.stacks.push(targetStack);
-      }
-    }
+    // 붙기 전(놓은 자리)과 붙은 뒤 자리의 차이를 재두었다가 애니메이션 시작점으로 쓴다.
+    var landedIndex = target.cardUids.length;
+    var fromDX = draggedStack.x - target.x;
+    var fromDY = draggedStack.y - (target.y + landedIndex * STACK_OFFSET);
+
+    target.cardUids = target.cardUids.concat(draggedStack.cardUids);
+    Game.stacks.splice(Game.stacks.indexOf(draggedStack), 1);
+    // 얹은 스택을 맨 위로 올려 그린다.
+    Game.stacks.splice(Game.stacks.indexOf(target), 1);
+    Game.stacks.push(target);
+
     renderAll();
+    snapAnimate(target.id, fromDX, fromDY, landedIndex);
   }
 
   // ------------------------------------------------------------- 렌더 전체
