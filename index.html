@@ -171,12 +171,29 @@
 
   .stack { position: absolute; }
 
-  /* 집어 든 카드 — 살짝 커지고 기울어져 '들고 있는' 느낌을 준다 */
+  /* 집어 든 카드.
+     확대·회전 효과는 일부러 넣지 않는다. 그러면 화면에 보이는 위치와 실제 위치가
+     어긋나서 "겹쳐 보이는데 안 붙는다"는 느낌을 준다. 그림자로만 들린 느낌을 준다. */
   .stack.dragging {
     pointer-events: none;
     z-index: 9999;
-    transform: scale(1.05) rotate(-1.5deg);
     filter: drop-shadow(0 12px 14px rgba(0, 0, 0, 0.55));
+  }
+
+  /* 끌고 있는 카드의 판정 기준점(한가운데)을 눈으로 확인할 수 있게 표시 */
+  .stack.dragging > .card:first-child::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 12px;
+    height: 12px;
+    margin: -6px 0 0 -6px;
+    border-radius: 50%;
+    background: rgba(255, 215, 94, 0.9);
+    box-shadow: 0 0 0 2px rgba(40, 34, 12, 0.65);
+    pointer-events: none;
+    z-index: 400;
   }
 
   /* 지금 놓으면 붙을 자리를 점선으로 미리 보여준다.
@@ -196,6 +213,9 @@
     pointer-events: none;
     z-index: 500;
   }
+
+  /* 어느 무더기가 선택됐는지 헷갈리지 않도록 대상 무더기 자체도 표시한다 */
+  .stack.drop-target .card { border-color: #ffd75e; }
 
   /* 카드가 착 달라붙은 직후 무더기 전체가 한 번 툭 눌렸다 펴진다 */
   .stack.stack-landed { animation: stack-land 320ms ease-out; }

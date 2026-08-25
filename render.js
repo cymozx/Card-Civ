@@ -8,8 +8,8 @@ var Render = (function () {
   var elBoard, elCanvas, elShop, elInfo, elLog, elToast;
   var toastTimer = null;
 
-  var SNAP_MS = 150;              // 붙을 때 미끄러져 들어오는 시간
-  var DROP_OVERLAP_RATIO = 0.28;  // 카드 넓이의 몇 %가 겹쳐야 '올렸다'고 볼지
+  var SNAP_MS = 150;             // 붙을 때 미끄러져 들어오는 시간
+  var DROP_SNAP_MARGIN = 30;     // 카드 중심이 무더기 밖이어도 이 거리(px)까지는 붙여줌
 
   // 드래그 상태
   var pending = null;   // 마우스를 눌렀지만 아직 움직이지 않은 상태
@@ -290,9 +290,23 @@ var Render = (function () {
 
   function canvasPoint(e) { return canvasPointXY(e.clientX, e.clientY); }
 
+  // 붙는 애니메이션이 아직 돌고 있으면 카드의 '보이는 위치'가 최종 위치와 다르다.
+  // 그 상태에서 카드를 집으면 잡은 지점이 어긋나므로, 집기 전에 애니메이션을 끝낸다.
+  function finishSnapAnimations() {
+    var cards = elCanvas.querySelectorAll('.card');
+    for (var i = 0; i < cards.length; i++) {
+      if (!cards[i].style.transform && !cards[i].style.transition) continue;
+      cards[i].style.transition = '';
+      cards[i].style.transform = '';
+    }
+    var landed = elCanvas.querySelectorAll('.stack.stack-landed');
+    for (var j = 0; j < landed.length; j++) landed[j].classList.remove('stack-landed');
+  }
+
   function onCardMouseDown(e) {
     if (e.button !== 0) return;
     e.preventDefault();
+    finishSnapAnimations();
     pending = {
       uid: parseInt(this.dataset.uid, 10),
       startClientX: e.clientX,
@@ -362,29 +376,47 @@ var Render = (function () {
     updateDropHighlight(findDropTarget(drag.stack));
   }
 
-  // 놓을 대상 찾기 — 커서 위치가 아니라 '카드끼리 겹친 넓이'로 판정한다.
-  // 커서로 판정하면 카드가 눈에 보이게 겹쳐 있어도 커서만 살짝 빗나가면 안 붙어서
-  // "인식이 안 된다"고 느껴진다. 겹침 판정이 훨씬 관대하고 예측 가능하다.
+  // 놓을 대상 찾기 — 규칙은 딱 하나다.
+  //
+  //   "끌고 있는 카드의 한가운데(●)가 올라가 있는 무더기에 붙는다."
+  //
+  // 카드도 무더기도 화면에 그려진 실제 사각형 그대로 계산한다. 끌고 있는 카드에
+  // 확대/회전 같은 효과를 주지 않는 것도 이 때문이다 — 보이는 자리와 계산하는
+  // 자리가 어긋나면 판정이 이상하게 느껴진다.
+  //
+  // 중심이 어떤 무더기에도 안 걸쳤을 때만, 가장 가까운 무더기가 DROP_SNAP_MARGIN
+  // px 안에 있으면 거기에 붙여준다(살짝 빗나간 경우를 위한 여유).
   function findDropTarget(draggedStack) {
-    var dx = draggedStack.x;
-    var dy = draggedStack.y;
-    var minArea = CARD_W * CARD_H * DROP_OVERLAP_RATIO;
+    // 실제로 내려놓게 되는 카드 = 끌고 있는 무더기의 맨 아래 카드
+    var cx = draggedStack.x + CARD_W / 2;
+    var cy = draggedStack.y + CARD_H / 2;
+
     var best = null;
-    var bestArea = 0;
+    var bestScore = Infinity;
 
     for (var i = 0; i < Game.stacks.length; i++) {
       var s = Game.stacks[i];
       if (s === draggedStack) continue;
 
-      // 대상은 스택 전체 넓이로 본다(높이 쌓인 무더기 중간에 놓아도 붙도록).
-      var ox = Math.min(dx + CARD_W, s.x + CARD_W) - Math.max(dx, s.x);
-      var oy = Math.min(dy + CARD_H, s.y + stackHeight(s)) - Math.max(dy, s.y);
-      if (ox <= 0 || oy <= 0) continue;
+      var left = s.x;
+      var right = s.x + CARD_W;
+      var top = s.y;
+      var bottom = s.y + stackHeight(s);   // 무더기가 실제로 차지하는 세로 길이
 
-      var area = ox * oy;
-      if (area > bestArea) { bestArea = area; best = s; }
+      // 중심점에서 무더기 사각형까지의 거리. 사각형 안이면 0.
+      var gapX = Math.max(left - cx, 0, cx - right);
+      var gapY = Math.max(top - cy, 0, cy - bottom);
+      var gap = Math.sqrt(gapX * gapX + gapY * gapY);
+      if (gap > DROP_SNAP_MARGIN) continue;
+
+      // 여러 무더기가 걸리면: 먼저 '안에 들어간 것' 우선, 그다음 중심이 가까운 것.
+      var toCenterX = cx - (left + right) / 2;
+      var toCenterY = cy - (top + bottom) / 2;
+      var score = gap * 10000 + Math.sqrt(toCenterX * toCenterX + toCenterY * toCenterY);
+
+      if (score < bestScore) { bestScore = score; best = s; }
     }
-    return bestArea >= minArea ? best : null;
+    return best;
   }
 
   function clearDropHighlight() {
